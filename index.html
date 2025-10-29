@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <title>Календарь циклов (офлайн)</title>
+  <meta name="theme-color" content="#ffffff"/>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <style>
+    :root { --fg:#1b1b1b; --muted:#777; --accent:#0a7; --bg:#fff; --pill:#e9fff7; --danger:#c00; --light:#f4f4f4;}
+    * { box-sizing: border-box; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+    body { margin: 0; color: var(--fg); background: var(--bg); }
+    header { position: sticky; top: 0; background: #fff; border-bottom:1px solid #eee; padding: 12px 16px; }
+    h1 { margin: 0 0 6px; font-size: 18px; }
+    .sub { color: var(--muted); font-size: 13px; }
+    main { padding: 12px 16px 100px; max-width: 720px; margin: 0 auto; }
+    .card { background:#fff; border:1px solid #eee; border-radius: 12px; padding: 12px; margin: 12px 0; }
+    .flex { display:flex; gap:10px; align-items:center; flex-wrap: wrap; }
+    label { font-size: 13px; color: var(--muted); display:block; margin-bottom:4px; }
+    input[type="date"] { padding:10px; border:1px solid #ddd; border-radius:10px; background:#fff; }
+    button { padding:10px 14px; border-radius:10px; border:1px solid #ddd; background:#fff; }
+    button.primary { background: var(--accent); border-color: var(--accent); color:#fff; }
+    button.ghost { background:#fff; }
+    button.danger { border-color: #f5caca; color:#a00; background:#fff4f4; }
+    .counter { padding: 10px 12px; background: var(--pill); border:1px solid #cfe; border-radius:10px; font-weight:600; }
+    .row { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+    .calendar { user-select:none; }
+    .cal-head { display:flex; justify-content:space-between; align-items:center; padding:6px 0 10px; }
+    .cal-grid { display:grid; grid-template-columns: repeat(7, 1fr); gap:4px; }
+    .dow, .day { text-align:center; font-size:13px; padding:6px 0; }
+    .dow { color: var(--muted); }
+    .day { border:1px solid #eee; border-radius:8px; min-height:38px; display:flex; align-items:center; justify-content:center; position:relative; }
+    .day.muted { color:#bbb; background:#fafafa; }
+    .day.period { background:#ffeef0; border-color:#ffd2d6; }
+    .day.period-start::after, .day.period-end::after {
+      content:""; position:absolute; inset: -1px; border:2px solid #ff6b7a; border-radius:8px; pointer-events:none;
+    }
+    .list { font-size:14px; }
+    .list .item { padding:8px 0; border-bottom:1px dashed #eee; display:flex; justify-content:space-between; gap:8px; }
+    .muted { color: var(--muted); }
+    .hint { font-size:12px; color: var(--muted); }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Календарь месячных</h1>
+  <div class="sub">Простой офлайн-трекер. Данные хранятся только на телефоне.</div>
+</header>
+<main>
+  <section class="card">
+    <div class="row">
+      <div class="counter" id="counter">—</div>
+      <div class="flex">
+        <button class="ghost" id="btnToday">К сегодня</button>
+        <button class="ghost" id="btnExport">Экспорт</button>
+        <button class="ghost" id="btnImport">Импорт</button>
+      </div>
+    </div>
+    <div class="hint" style="margin-top:6px;">
+      Метрика: «какой сегодня день цикла (считая от начала последних месячных)».
+      Если месячные начались сегодня — это 1-й день цикла.
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="calendar">
+      <div class="cal-head">
+        <button id="prevMonth">◀</button>
+        <div id="monthLabel" style="font-weight:600;"></div>
+        <button id="nextMonth">▶</button>
+      </div>
+      <div class="cal-grid" id="dow"></div>
+      <div class="cal-grid" id="days"></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="flex" style="align-items:flex-end;">
+      <div>
+        <label for="start">Начало месячных</label>
+        <input type="date" id="start">
+      </div>
+      <div>
+        <label for="end">Окончание месячных</label>
+        <input type="date" id="end">
+      </div>
+      <button class="primary" id="save">Сохранить период</button>
+      <button class="danger" id="deleteLast">Удалить последний</button>
+    </div>
+    <div class="hint" style="margin-top:8px;">Можно вести несколько периодов. Перекрытия не допускаются.</div>
+  </section>
+
+  <section class="card">
+    <div class="row" style="margin-bottom:6px;">
+      <div style="font-weight:600;">Записанные периоды</div>
+      <button class="ghost" id="clearAll">Очистить всё</button>
+    </div>
+    <div class="list" id="periodList"></div>
+  </section>
+</main>
+
+<script>
+(function(){
+  const $ = (id)=>document.getElementById(id);
+  const STORAGE_KEY = 'period-tracker.periods.v1';
+
+  const state = {
+    periods: load(),
+    viewYear: new Date().getFullYear(),
+    viewMonth: new Date().getMonth(), // 0-11
+  };
+
+  // ----- Storage -----
+  function load(){
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if(!raw) return [];
+      const arr = JSON.parse(raw);
+      return (arr||[]).map(p=>({ start: p.start, end: p.end }))
+                      .sort((a,b)=>a.start.localeCompare(b.start));
+    } catch(e){ return []; }
+  }
+  function save(){
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state.periods));
+    render();
+  }
+
+  // ----- Utils -----
+  // Внутренний ISO-формат для хранения
+  function fmt(d){
+    const y = d.getFullYear();
+    const m = String(d.getMonth()+1).padStart(2,'0');
+    const day = String(d.getDate()).padStart(2,'0');
+    return `${y}-${m}-${day}`;
+  }
+  // Отображение для пользователя: ДД.ММ.ГГГГ
+  function fmtRu(d){
+    const dd = String(d.getDate()).padStart(2,'0');
+    const mm = String(d.getMonth()+1).padStart(2,'0');
+    const yy = d.getFullYear();
+    return `${dd}.${mm}.${yy}`;
+  }
+  function parseISO(s){
+    const [y,m,d] = s.split('-').map(Number);
+    const dt = new Date(y, m-1, d, 12, 0, 0, 0);
+    dt.setHours(0,0,0,0);
+    return dt;
+  }
+  function daysDiff(a,b){
+    const MS = 24*60*60*1000;
+    return Math.round((a - b)/MS);
+  }
+  function clamp(a,b){ return a>b ? [b,a] : [a,b]; }
+
+  function hasOverlap(newStart, newEnd){
+    const ns = parseISO(newStart), ne = parseISO(newEnd);
+    return state.periods.some(p=>{
+      const ps = parseISO(p.start), pe = parseISO(p.end);
+      return !(ne < ps || ns > pe);
+    });
+  }
+
+  // ----- Counter: день цикла от последнего начала -----
+  function computeCounter(){
+    if(state.periods.length === 0) return 'Нет данных';
+    const today = new Date(); today.setHours(0,0,0,0);
+
+    const lastByStart = [...state.periods]
+      .filter(p => parseISO(p.start) <= today)
+      .sort((a,b)=>a.start.localeCompare(b.start))
+      .at(-1);
+
+    if(!lastByStart) return 'Нет данных';
+
+    const startDate = parseISO(lastByStart.start);
+    const n = 1 + daysDiff(today, startDate); // inclusive: start today -> 1
+
+    const endDate = parseISO(lastByStart.end);
+    const stillOnPeriod = today <= endDate;
+
+    const prefix = `Сегодня ${n}-й день цикла`;
+    if(stillOnPeriod){
+      return `${prefix} (месячные начались: ${fmtRu(startDate)}, ещё идут до ${fmtRu(endDate)})`;
+    } else {
+      return `${prefix} (последнее начало: ${fmtRu(startDate)})`;
+    }
+  }
+
+  // ----- Calendar -----
+  function buildCalendar(y, m){
+    const first = new Date(y, m, 1);
+    const startDay = (first.getDay()+6)%7; // Monday=0
+    const daysInMonth = new Date(y, m+1, 0).getDate();
+    const prevDays = startDay;
+    const total = Math.ceil((prevDays + daysInMonth)/7)*7;
+
+    const monthLabel = first.toLocaleString('ru-RU', { month:'long', year:'numeric' });
+    $('monthLabel').textContent = monthLabel[0].toUpperCase()+monthLabel.slice(1);
+
+    const dow = ['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];
+    $('dow').innerHTML = '';
+    dow.forEach(d=>{
+      const div = document.createElement('div');
+      div.className = 'dow'; div.textContent = d;
+      $('dow').appendChild(div);
+    });
+
+    $('days').innerHTML = '';
+    for(let i=0;i<total;i++){
+      const dayNum = i - prevDays + 1;
+      let dt, muted = false;
+      if(dayNum < 1){ dt = new Date(y, m, 0 + dayNum); muted = true; }
+      else if(dayNum > daysInMonth){ dt = new Date(y, m, dayNum); muted = true; }
+      else { dt = new Date(y, m, dayNum); }
+      dt.setHours(0,0,0,0);
+      const iso = fmt(dt);
+
+      const div = document.createElement('div');
+      div.className = 'day'+(muted?' muted':'');
+      div.textContent = String(dt.getDate());
+
+      let inRange = false, start=false, end=false;
+      for(const p of state.periods){
+        if(iso >= p.start && iso <= p.end) inRange = true;
+        if(iso === p.start) start = true;
+        if(iso === p.end) end = true;
+      }
+      if(inRange) div.classList.add('period');
+      if(start) div.classList.add('period-start');
+      if(end) div.classList.add('period-end');
+
+      $('days').appendChild(div);
+    }
+  }
+
+  // ----- List -----
+  function renderList(){
+    const box = $('periodList');
+    box.innerHTML = '';
+    if(state.periods.length === 0){
+      box.innerHTML = '<div class="muted">Пока пусто.</div>';
+      return;
+    }
+    for(let i=state.periods.length-1;i>=0;i--){
+      const p = state.periods[i];
+      const len = 1 + daysDiff(parseISO(p.end), parseISO(p.start));
+      const startRu = fmtRu(parseISO(p.start));
+      const endRu = fmtRu(parseISO(p.end));
+      const item = document.createElement('div');
+      item.className = 'item';
+      item.innerHTML = `
+        <div><strong>${startRu}</strong> — <strong>${endRu}</strong> <span class="muted">(${len} дн.)</span></div>
+        <div class="flex">
+          <button data-idx="${i}" class="ghost btnDel">Удалить</button>
+        </div>
+      `;
+      box.appendChild(item);
+    }
+    box.querySelectorAll('.btnDel').forEach(btn=>{
+      btn.addEventListener('click', (e)=>{
+        const idx = Number(e.currentTarget.dataset.idx);
+        state.periods.splice(idx,1);
+        save();
+      });
+    });
+  }
+
+  // ----- Render -----
+  function render(){
+    buildCalendar(state.viewYear, state.viewMonth);
+    renderList();
+    $('counter').textContent = computeCounter();
+  }
+
+  // ----- Init -----
+  (function initDefaults(){
+    const today = fmt(new Date());
+    $('start').value = today;
+    $('end').value = today;
+  })();
+
+  // ----- Events -----
+  $('prevMonth').onclick = ()=>{ 
+    if(state.viewMonth===0){ state.viewMonth=11; state.viewYear--; } else state.viewMonth--;
+    render();
+  };
+  $('nextMonth').onclick = ()=>{
+    if(state.viewMonth===11){ state.viewMonth=0; state.viewYear++; } else state.viewMonth++;
+    render();
+  };
+  $('btnToday').onclick = ()=>{
+    const now = new Date();
+    state.viewYear = now.getFullYear();
+    state.viewMonth = now.getMonth();
+    render();
+  };
+
+  $('save').onclick = ()=>{
+    const s = $('start').value;
+    const e = $('end').value;
+    if(!s || !e) { alert('Укажите даты начала и конца.'); return; }
+    const [start, end] = clamp(s,e);
+    if (parseISO(end) < parseISO(start)) { alert('Конец раньше начала.'); return; }
+    if (hasOverlap(start, end)) { alert('Этот период пересекается с уже записанным. Сначала удалите пересечения.'); return; }
+    state.periods.push({start, end});
+    state.periods.sort((a,b)=>a.start.localeCompare(b.start));
+    save();
+  };
+
+  $('deleteLast').onclick = ()=>{
+    if(state.periods.length===0) return;
+    state.periods.pop(); save();
+  };
+
+  $('clearAll').onclick = ()=>{
+    if(confirm('Удалить все периоды без возможности восстановления?')) {
+      state.periods = []; save();
+    }
+  };
+
+  // Export / Import
+  $('btnExport').onclick = ()=>{
+    const blob = new Blob([JSON.stringify(state.periods, null, 2)], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `periods-${fmt(new Date())}.json`; a.click();
+    URL.revokeObjectURL(url);
+  };
+  $('btnImport').onclick = async ()=>{
+    const input = document.createElement('input');
+    input.type = 'file'; input.accept = 'application/json';
+    input.onchange = async ()=>{
+      const file = input.files[0];
+      if(!file) return;
+      const text = await file.text();
+      try {
+        const arr = JSON.parse(text);
+        if(!Array.isArray(arr)) throw new Error('Invalid format');
+        for(const p of arr){ if(!p.start || !p.end) throw new Error('Missing fields'); }
+        state.periods = arr.sort((a,b)=>a.start.localeCompare(b.start));
+        save();
+      } catch(err){
+        alert('Ошибка импорта: '+err.message);
+      }
+    };
+    input.click();
+  };
+
+  // ----- Service worker -----
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', ()=> {
+      navigator.serviceWorker.register('./sw.js').catch(()=>{});
+    });
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>
